@@ -1,0 +1,6 @@
+# Web dashboard (Step 5)
+Flask>=3.0
+
+# Hardware libraries: only installable/useful on the Raspberry Pi.
+# On your laptop we run in MOCK_MODE, so these are skipped.
+RPi.GPIO>=0.7.1; sys_platform == "linux" and platform_machine != "x86_64"
