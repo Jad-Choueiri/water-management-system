@@ -1,8 +1,11 @@
 """
 controller.py - Finite State Machine that decides when to water.
 
-States (Step 3A): IDLE, WATERING, COOLDOWN, LOCKOUT
-(FAULT is added in Step 3B.)
+States: IDLE, WATERING, COOLDOWN, LOCKOUT, FAULT
+
+FAULT is a LATCHED safe state: pump OFF, valve OFF, buzzer ON. It is entered
+on dry-run (pump on, no flow), sensor errors, or stale data, and it only
+clears when a human calls reset_fault().
 
 The controller never touches RPi.GPIO. It only uses the Hardware interfaces,
 so it behaves identically on a laptop (mock) and on a Raspberry Pi (real).
@@ -24,6 +27,7 @@ class State(Enum):
     WATERING = "WATERING"
     COOLDOWN = "COOLDOWN"
     LOCKOUT = "LOCKOUT"
+    FAULT = "FAULT"
 
 
 class Controller:
@@ -34,8 +38,11 @@ class Controller:
         self.state = State.IDLE
         self.state_since = clock()
         self.last_reason = "startup"
+        self.fault_reason: Optional[str] = None
         self.last_moisture: Optional[float] = None
         self.last_tank: Optional[float] = None
+        self.last_flow: Optional[float] = None
+        self._last_good_reading = clock()
         hw.all_outputs_off()                 # always begin in the safe state
 
     # ------------------------------------------------------------------ helpers
@@ -53,20 +60,65 @@ class Controller:
         self.hw.status_led.off()
 
     def _transition(self, new_state: State, reason: str) -> None:
+        # ---- exit actions ----
         if self.state == State.WATERING:
-            self._stop_pump()                # exit action
+            self._stop_pump()
+        if self.state == State.FAULT:
+            self.hw.buzzer.off()
+            self.fault_reason = None
         log.info("STATE %s -> %s (%s)", self.state.value, new_state.value, reason)
         self.state = new_state
         self.state_since = self._clock()
         self.last_reason = reason
+        # ---- entry actions ----
         if new_state == State.WATERING:
-            self._start_pump()               # entry action
+            self._start_pump()
+        elif new_state == State.FAULT:
+            self._stop_pump()                # belt and braces: outputs OFF
+            self.hw.buzzer.on()
+            self.fault_reason = reason
+
+    def _enter_fault(self, reason: str) -> None:
+        if self.state != State.FAULT:        # latch: don't re-enter
+            self._transition(State.FAULT, reason)
+
+    # ------------------------------------------------------------ fault inputs
+    def report_sensor_error(self, reason: str) -> None:
+        """Called by the main loop when a sensor read raises SensorReadError."""
+        self._enter_fault(f"sensor error: {reason}")
+
+    def check_stale(self) -> None:
+        """Called every cycle: no good reading for too long -> FAULT."""
+        age = self._clock() - self._last_good_reading
+        if age >= config.SENSOR_STALE_TIMEOUT_SECONDS:
+            self._enter_fault(f"stale sensor data ({age:.0f}s)")
+
+    def reset_fault(self) -> bool:
+        """Human acknowledgement. Returns True if a fault was cleared."""
+        if self.state != State.FAULT:
+            return False
+        self._last_good_reading = self._clock()   # fresh start for stale check
+        self._transition(State.IDLE, "fault reset by operator")
+        return True
 
     # --------------------------------------------------------------- main logic
-    def step(self, moisture_pct: float, tank_pct: float) -> State:
-        """Run ONE decision cycle with the given sensor readings."""
+    def step(self, moisture_pct: float, tank_pct: float,
+             flow_lpm: float = 0.0) -> State:
+        """Run ONE decision cycle with the given (valid) sensor readings."""
         self.last_moisture = moisture_pct
         self.last_tank = tank_pct
+        self.last_flow = flow_lpm
+        self._last_good_reading = self._clock()
+
+        if self.state == State.FAULT:
+            return self.state                # latched: only reset_fault() exits
+
+        # Dry-run detection: pump has had time to build flow, but none is seen.
+        if (self.state == State.WATERING
+                and self.seconds_in_state() >= config.DRY_RUN_CHECK_DELAY_SECONDS
+                and flow_lpm < config.MIN_FLOW_RATE_LPM):
+            self._enter_fault(f"dry run: flow {flow_lpm:.2f} L/min")
+            return self.state
 
         if self.state == State.IDLE:
             if tank_pct < config.TANK_LOW_CUTOFF_PCT:
@@ -98,9 +150,12 @@ class Controller:
         return {
             "state": self.state.value,
             "reason": self.last_reason,
+            "fault_reason": self.fault_reason,
             "seconds_in_state": round(self.seconds_in_state(), 1),
             "moisture_pct": self.last_moisture,
             "tank_pct": self.last_tank,
+            "flow_lpm": self.last_flow,
             "pump_on": self.hw.pump.is_on,
             "valve_on": self.hw.valve.is_on,
+            "buzzer_on": self.hw.buzzer.is_on,
         }
