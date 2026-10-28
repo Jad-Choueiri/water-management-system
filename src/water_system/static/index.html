@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Water Management System</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8;
+          --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --info:#38bdf8; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font-family: system-ui, sans-serif; }
+  h1 { font-size:1.3rem; margin:0 0 12px; }
+  .grid { display:grid; gap:12px;
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .card { background:var(--card); border-radius:10px; padding:14px; }
+  .label { color:var(--muted); font-size:.8rem; text-transform:uppercase; }
+  .value { font-size:1.8rem; font-weight:600; margin-top:4px; }
+  .badge { display:inline-block; padding:4px 12px; border-radius:999px;
+           font-weight:700; background:var(--muted); color:#000; }
+  .IDLE{background:var(--info)} .WATERING{background:var(--ok)}
+  .COOLDOWN{background:var(--warn)} .LOCKOUT{background:var(--warn)}
+  .FAULT{background:var(--bad); color:#fff}
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
+  button { padding:10px 18px; border:0; border-radius:8px; font-weight:600;
+           cursor:pointer; background:var(--info); color:#000; }
+  button.danger { background:var(--bad); color:#fff; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  canvas { width:100%; height:200px; background:var(--card);
+           border-radius:10px; }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  td, th { text-align:left; padding:6px 4px;
+           border-bottom:1px solid #334155; }
+  #conn { float:right; font-size:.8rem; color:var(--muted); }
+  #msg { min-height:1.2em; color:var(--muted); font-size:.9rem; }
+</style>
+</head>
+<body>
+<h1>Water Management System <span id="conn">connecting...</span></h1>
+
+<div class="grid">
+  <div class="card"><div class="label">State</div>
+    <div class="value"><span id="state" class="badge">-</span></div>
+    <div id="reason" class="label"></div></div>
+  <div class="card"><div class="label">Soil moisture</div>
+    <div class="value" id="moisture">-</div></div>
+  <div class="card"><div class="label">Tank level</div>
+    <div class="value" id="tank">-</div></div>
+  <div class="card"><div class="label">Flow</div>
+    <div class="value" id="flow">-</div></div>
+  <div class="card"><div class="label">Pump</div>
+    <div class="value" id="pump">-</div></div>
+  <div class="card"><div class="label">Mode</div>
+    <div class="value" id="mode">-</div></div>
+</div>
+
+<div class="row">
+  <button id="stopBtn" class="danger">Stop watering</button>
+  <button id="resetBtn">Reset fault</button>
+  <span id="msg"></span>
+</div>
+
+<h3>Last hour: moisture (green) and tank (blue)</h3>
+<canvas id="chart" width="900" height="200"></canvas>
+
+<h3>Recent events</h3>
+<div class="card"><table>
+  <thead><tr><th>Time</th><th>Kind</th><th>State</th><th>Message</th></tr></thead>
+  <tbody id="events"></tbody>
+</table></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, unit) => (v === null || v === undefined) ? "-" : v.toFixed(1) + unit;
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+async function post(url) {
+  try {
+    const r = await fetch(url, { method: "POST" });
+    const j = await r.json();
+    $("msg").textContent = j.message;
+  } catch (e) { $("msg").textContent = "Request failed"; }
+  refresh();
+}
+$("stopBtn").onclick = () => post("/api/pump/stop");
+$("resetBtn").onclick = () => post("/api/fault/reset");
+
+function drawChart(rows) {
+  const c = $("chart"), g = c.getContext("2d");
+  g.clearRect(0, 0, c.width, c.height);
+  g.strokeStyle = "#334155"; g.fillStyle = "#94a3b8"; g.font = "11px sans-serif";
+  for (let p = 0; p <= 100; p += 25) {
+    const y = c.height - 15 - (p / 100) * (c.height - 25);
+    g.beginPath(); g.moveTo(30, y); g.lineTo(c.width, y); g.stroke();
+    g.fillText(p, 4, y + 4);
+  }
+  if (rows.length < 2) return;
+  const t0 = rows[0].ts, t1 = rows[rows.length - 1].ts || t0 + 1;
+  const x = ts => 30 + (ts - t0) / Math.max(t1 - t0, 1) * (c.width - 35);
+  const y = v => c.height - 15 - (v / 100) * (c.height - 25);
+  [["moisture_pct", "#22c55e"], ["tank_pct", "#38bdf8"]].forEach(([key, color]) => {
+    g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
+    let started = false;
+    rows.forEach(r => {
+      if (r[key] === null) { started = false; return; }   // gap on sensor failure
+      started ? g.lineTo(x(r.ts), y(r[key])) : g.moveTo(x(r.ts), y(r[key]));
+      started = true;
+    });
+    g.stroke();
+  });
+}
+
+function renderEvents(rows) {
+  const body = $("events");
+  body.replaceChildren();
+  rows.slice(0, 10).forEach(e => {
+    const tr = document.createElement("tr");
+    [new Date(e.ts * 1000).toLocaleTimeString(), e.kind, e.state, e.message]
+      .forEach(text => {
+        const td = document.createElement("td");
+        td.textContent = text ?? "";          // textContent: never innerHTML
+        tr.appendChild(td);
+      });
+    body.appendChild(tr);
+  });
+}
+
+async function refresh() {
+  try {
+    const [s, hist, ev] = await Promise.all([
+      getJSON("/api/status"),
+      getJSON("/api/history?minutes=60&limit=1000"),
+      getJSON("/api/events?limit=10"),
+    ]);
+    $("state").textContent = s.state;
+    $("state").className = "badge " + s.state;
+    $("reason").textContent = s.fault_reason || s.reason;
+    $("moisture").textContent = fmt(s.moisture_pct, "%");
+    $("tank").textContent = fmt(s.tank_pct, "%");
+    $("flow").textContent = fmt(s.flow_lpm, " L/m");
+    $("pump").textContent = s.pump_on ? "ON" : "off";
+    $("mode").textContent = s.mock_mode ? "Simulation" : "Real HW";
+    $("stopBtn").disabled = s.state !== "WATERING";
+    $("resetBtn").disabled = s.state !== "FAULT";
+    $("conn").textContent = "live " + new Date().toLocaleTimeString();
+    drawChart(hist);
+    renderEvents(ev);
+  } catch (e) {
+    $("conn").textContent = "connection lost";
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

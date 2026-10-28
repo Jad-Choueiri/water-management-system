@@ -98,5 +98,11 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/pump/on").status_code, 404)
 
 
+    def test_dashboard_page_is_served(self):
+        resp = self.client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Water Management System", resp.data)
+        resp.close()
+
 if __name__ == "__main__":
     unittest.main()

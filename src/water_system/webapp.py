@@ -18,12 +18,15 @@ There is deliberately NO endpoint that starts the pump.
 import threading
 from typing import Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 from water_system import config
 from water_system.controller import Controller
 from water_system.database import Database
 
+from pathlib import Path
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def _int_arg(name: str, default: int, low: int, high: int) -> int:
     """Read an integer query parameter, clamped to [low, high]."""
@@ -38,7 +41,9 @@ def create_app(controller: Controller, db: Database,
                lock: Optional[threading.RLock] = None) -> Flask:
     app = Flask(__name__)
     lock = lock or threading.RLock()
-
+    @app.get("/")
+    def index():
+        return send_from_directory(STATIC_DIR, "index.html")
     @app.get("/api/status")
     def status():
         with lock:
