@@ -100,6 +100,63 @@ class Database:
             return self._conn.execute(
                 f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
+        # --------------------------------------------------------------- retention
+    def prune(self) -> Dict[str, int]:
+        """Delete rows older than the retention limits. Returns rows deleted."""
+        now = self._clock()
+        readings_cutoff = now - config.DB_READINGS_RETENTION_DAYS * 86400
+        events_cutoff = now - config.DB_EVENTS_RETENTION_DAYS * 86400
+        with self._lock:
+            deleted_readings = self._conn.execute(
+                "DELETE FROM readings WHERE ts < ?", (readings_cutoff,)).rowcount
+            deleted_events = self._conn.execute(
+                "DELETE FROM events WHERE ts < ?", (events_cutoff,)).rowcount
+            self._conn.commit()
+        if deleted_readings or deleted_events:
+            log.info("Pruned %d readings, %d events",
+                     deleted_readings, deleted_events)
+        return {"readings": deleted_readings, "events": deleted_events}
+
+    # ----------------------------------------------------- dashboard queries
+    def history(self, since_seconds: float, limit: int = 1000) -> List[Dict]:
+        """Readings from the last `since_seconds`, OLDEST first (for charts)."""
+        cutoff = self._clock() - since_seconds
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM readings WHERE ts >= ? "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                (cutoff, limit)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def summary(self, since_seconds: float) -> Dict[str, object]:
+        """Aggregate statistics for the last `since_seconds`."""
+        cutoff = self._clock() - since_seconds
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n, AVG(moisture_pct) AS avg_m, "
+                "MIN(moisture_pct) AS min_m, MAX(moisture_pct) AS max_m, "
+                "AVG(tank_pct) AS avg_t, SUM(pump_on) AS pump_samples "
+                "FROM readings WHERE ts >= ?", (cutoff,)).fetchone()
+            cycles = self._conn.execute(
+                "SELECT COUNT(*) FROM events WHERE ts >= ? "
+                "AND kind = 'STATE_CHANGE' AND state = 'WATERING'",
+                (cutoff,)).fetchone()[0]
+            faults = self._conn.execute(
+                "SELECT COUNT(*) FROM events WHERE ts >= ? AND kind = 'FAULT'",
+                (cutoff,)).fetchone()[0]
+        return {
+            "readings": row["n"],
+            "avg_moisture": row["avg_m"],
+            "min_moisture": row["min_m"],
+            "max_moisture": row["max_m"],
+            "avg_tank": row["avg_t"],
+            # Samples with the pump on. Multiply by the logging interval
+            # (DB_LOG_INTERVAL_SECONDS) for an approximate pump-on time.
+            "pump_on_samples": row["pump_samples"] or 0,
+            "watering_cycles": cycles,
+            "faults": faults,
+        }
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

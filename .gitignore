@@ -16,3 +16,6 @@ Thumbs.db
 
 # Secrets / local overrides
 .env
+
+Add-Content .gitignore "data/*.db-wal"
+Add-Content .gitignore "data/*.db-shm"

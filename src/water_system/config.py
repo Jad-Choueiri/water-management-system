@@ -107,6 +107,9 @@ SENSOR_STALE_TIMEOUT_SECONDS = 10  # No fresh reading in this time = FAULT
 SENSOR_POLL_INTERVAL_SECONDS = 1.0   # How often we sample sensors
 CONTROL_LOOP_INTERVAL_SECONDS = 0.5  # How often the state machine runs
 DB_LOG_INTERVAL_SECONDS = 5.0        # How often we write a reading to SQLite
+DB_READINGS_RETENTION_DAYS = 7       # keep sensor samples this long
+DB_EVENTS_RETENTION_DAYS = 90        # keep state changes / faults this long
+DB_PRUNE_INTERVAL_SECONDS = 3600     # how often the main loop prunes (Step 6)
 FLOW_CALC_WINDOW_SECONDS = 2.0       # Window for converting pulses -> L/min
 
 # =============================================================================

@@ -32,9 +32,11 @@ class State(Enum):
 
 class Controller:
     def __init__(self, hw: Hardware,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 on_event: Optional[Callable[[str, str, str], None]] = None):
         self.hw = hw
         self._clock = clock
+        self._on_event = on_event            # observer: (kind, state, message)
         self.state = State.IDLE
         self.state_since = clock()
         self.last_reason = "startup"
@@ -59,6 +61,15 @@ class Controller:
         self.hw.valve.off()
         self.hw.status_led.off()
 
+    def _emit(self, kind: str, state: str, message: str) -> None:
+        """Tell the observer about an event. Must never break the controller."""
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(kind, state, message)
+        except Exception:
+            log.exception("event callback failed (ignored)")
+
     def _transition(self, new_state: State, reason: str) -> None:
         # ---- exit actions ----
         if self.state == State.WATERING:
@@ -77,6 +88,9 @@ class Controller:
             self._stop_pump()                # belt and braces: outputs OFF
             self.hw.buzzer.on()
             self.fault_reason = reason
+        # ---- notify observer LAST, after the hardware is already safe ----
+        self._emit("FAULT" if new_state == State.FAULT else "STATE_CHANGE",
+                   new_state.value, reason)
 
     def _enter_fault(self, reason: str) -> None:
         if self.state != State.FAULT:        # latch: don't re-enter
