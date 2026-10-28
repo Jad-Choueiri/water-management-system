@@ -115,6 +115,13 @@ class Controller:
         self._transition(State.IDLE, "fault reset by operator")
         return True
 
+    def manual_stop(self) -> bool:
+        """Operator pressed STOP. Returns True if watering was interrupted."""
+        if self.state != State.WATERING:
+            return False
+        self._transition(State.COOLDOWN, "stopped by operator")
+        return True
+    
     # --------------------------------------------------------------- main logic
     def step(self, moisture_pct: float, tank_pct: float,
              flow_lpm: float = 0.0) -> State:
